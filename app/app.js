@@ -48,7 +48,7 @@ function rmList(limit){
   const list=rmFilter(readyMeals,rf).sort((a,b)=>(isFav(rmId(b))-isFav(rmId(a)))||(rmInWeek(b)-rmInWeek(a))||a.price-b.price);
   return `<p class="hint">${list.length} of ${readyMeals.length} ready meals${readyMeals.checkedAt?"":""}. Favourites first, then cheapest.</p>${list.length?`<div class="rgrid">${list.slice(0,limit||400).map(rmCard).join("")}</div>`:`<div class="empty">Nothing matches those filters.</div>`}`;
 }
-let library={}, view="plan", recTab="week", recRegion="Thai", rv=null, sampleFn=null, finding=null;
+let library={}, view="home", recTab="week", recRegion="Thai", rv=null, sampleFn=null, finding=null;
 const REGIONS=["Chinese","Indian","Thai","Malaysian","Japanese","Eastern Europe","French","Spanish","Italian","United Kingdom","Wildcard"];
 function regionSlug(r){return r.toLowerCase().replace(/[^a-z]+/g,"-");}
 function libraryRecipes(regions){ return (regions||REGIONS).flatMap(r=>(library[r]||[])); }
@@ -80,6 +80,8 @@ function bfData(){ return master.breakfasts||{zoe:[],owen:[],cereals:[],weekend:
 function pantryFor(){ const out={}; if(!master.breakfasts) return out; const b=bf(); (b.zoe||[]).forEach(id=>{const o=bfData().zoe.find(x=>x.id===id); if(o) o.pantry.forEach(p=>{out[p]="for Zoe's "+(id==="oats"?"oats":"pancakes");});}); return out; }
 function blankRun(delivery,prevBreakfast){return {delivery,dinners:5,notes:"",breakfast:prevBreakfast?Object.assign(clone(prevBreakfast),{weekend:false,weekendPicks:[],weekendCustom:[]}):defaultBreakfast(),meals:[],staples:{},topups:{},drinks:{},household:{},cupboard:[],extras:[],edits:{},status:"planning",report:null,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};}
 
+/* A week written by an older version (or partly by the PC agent) may lack some parts: fill them in. */
+function normRun(r){ const b=blankRun(r.delivery||isoD(new Date())); for(const k of ["meals","staples","topups","drinks","household","cupboard","extras","edits"]) if(r[k]==null) r[k]=clone(b[k]); if(!r.dinners) r.dinners=b.dinners; if(r.notes==null) r.notes=""; return r; }
 /* ---------- derived data ---------- */
 function otherRuns(cur){cur=cur||run;return runs.filter(r=>cur&&r.id!==cur.id&&(r.status==="ready"||r.status==="filled"));}
 /* Last time an item was bought, or checked and declined ("we've got some"), before this run's delivery. */
@@ -133,13 +135,14 @@ function topUpMeals(r,n){
 function pickFrom(r,all,recent,count,exclude){
   exclude=exclude||[]; all=all.filter(m=>!m.ready&&!exclude.includes(m.id));
   let pool=all.filter(m=>!recent[m.id]); if(pool.length<count) pool=all;
-  const have={}; exclude.forEach(id=>{const m=mealById(id)||findRecipe(id); if(m) have[m.protein]=1;});
+  const have={}, base=[]; exclude.forEach(id=>{const m=mealById(id)||findRecipe(id); if(m){ have[m.protein]=1; base.push(m); }});
   let best=[],bestScore=-Infinity;
   for(let a=0;a<300;a++){
     const sh=[...pool].sort(()=>Math.random()-.5); const pick=[]; const prot=Object.assign({},have);
     for(const m of sh){ if(pick.length>=count) break; if(prot[m.protein]&&Math.random()<.8&&sh.length>count*2) continue; pick.push(m); prot[m.protein]=1; }
     for(const m of sh){ if(pick.length>=count) break; if(!pick.includes(m)) pick.push(m); }
-    const score=Object.keys(prot).length*6+pick.filter(m=>m.frequent).length*3+Math.random()*4;
+    const pc=planCost([...base,...pick]);
+    const score=Object.keys(prot).length*6+pick.filter(m=>m.frequent).length*3+pc.shared*2.5-pc.cost*0.2+Math.random()*4;
     if(score>bestScore){bestScore=score;best=pick;}
   }
   return best.map(m=>m.id);
@@ -150,11 +153,44 @@ function decline(kind,id){ change(r=>{ r[kind][id]=0; r.declined=r.declined||{};
 const MODES={auto:{name:"Full auto",desc:"Tell it how many meals. They're picked for you (or pick them yourself) and top-ups are added when they're due.",steps:[5]},
   manual:{name:"Manual",desc:"Go through every stage yourself.",steps:[0,1,2,3,4,5]}};
 let showAll=false, pickOpen=false, priceReq=null;
+let wstate=null, wopts=null, reqs={}, wsheet=null, clearArm=false;
+const REQ_NAMES=["sync","slots","book","basket","stock","quickadd","options"];
 function modeOf(){const m=run&&run.mode;return m==="meals"?"auto":(m&&MODES[m])?m:"manual";}
 function priceInfo(product){return (master&&master.prices&&master.prices[product])||null;}
 function visibleSteps(){return showAll?[0,1,2,3,4,5]:MODES[modeOf()].steps;}
 function mealById(id){return (run&&(run.extraMeals||[]).find(m=>m.id===id&&m.ready))||master.meals.find(m=>m.id===id)||(run&&(run.extraMeals||[]).find(m=>m.id===id));}
 function plannedDinners(){return (run.meals||[]).length;}
+
+/* ---------- shared ingredients ----------
+   How many meals one pack covers, so an ingredient two dishes share is bought once
+   (a bag of onions does two meals; chicken breasts or a tin of coconut milk do one). */
+const RX_SINGLE=/\b(tins?|cans?|coconut milk|chopped tomatoes|passata|buns|wraps|tortillas?|noodles|pasta|spaghetti|lasagne|rice|stock pots?|double cream|single cream|cr[eè]me fra[iî]che|soured cream|chestnuts|sweetcorn|chickpeas|lentils|kidney beans|black beans|butter beans)\b|\(each\)/i;
+const RX_JAR=/\b(kimchi|olives|sauce|paste|oil|vinegar|paprika|cumin|spices?|seeds|mustard|honey|soy|miso|capers|stock cubes)\b/i;
+const RX_PROTEIN=/\b(chicken|beef|pork|lamb|salmon|cod|haddock|fish|prawns?|mince|sausages?|steaks?|fillets?|thighs?|breasts?|bacon|duck|turkey|gammon|belly|tofu|halloumi|chorizo)\b/i;
+const RX_HERB=/\b(coriander|parsley|basil|mint|rosemary|thyme|tarragon|dill|chives|sage|chillies|chilli|ginger|lemon ?grass|garlic)\b/i;
+const RX_MULTI=/\b(\d+s|onions?|shallots|carrots|potatoes|celery|lemons|limes|parmigiano|parmesan|cheese|butter|peas|lettuce|cucumber)\b|\b\d+(\.\d+)?kg\b/i;
+function packCovers(b){ if(b.covers) return b.covers; const p=b.product||"";
+  if(RX_SINGLE.test(p)) return 1; if(RX_JAR.test(p)) return 4; if(RX_PROTEIN.test(p)) return 1;
+  if(RX_HERB.test(p)) return 3; if(b.aisle==="Food Cupboard") return 4; if(RX_MULTI.test(p)) return 2; return 1; }
+function mergeMeals(meals){ const need=new Map();
+  meals.forEach(m=>(m.buy||[]).forEach(b=>{ const s=need.get(b.product)||{aisle:b.aisle,price:b.price,need:0,srcs:[]}; s.need+=(b.qty||1)/packCovers(b); if(!s.srcs.includes(m.name)) s.srcs.push(m.name); need.set(b.product,s); }));
+  need.forEach(s=>{ s.packs=Math.max(1,Math.ceil(s.need-1e-9)); }); return need; }
+function planCost(meals){ let cost=0,shared=0; mergeMeals(meals).forEach((s,p)=>{ const pi=priceInfo(p); const pr=(pi&&pi.price!=null)?pi.price:(s.price!=null?s.price:2); cost+=s.packs*pr; if(s.srcs.length>1) shared++; }); return {cost,shared}; }
+
+/* ---------- product tiers and sizes (options found on Waitrose by the PC agent) ---------- */
+const TIERS=[["premium","Premium"],["regular","Regular"],["economy","Economy"]];
+function sizeVal(label){ const m=String(label).match(/(\d+(?:\.\d+)?)\s?(kg|g|ml|cl|l|litres?|pints?)\b/i);
+  if(m){ const f={kg:1000,g:1,ml:1,cl:10,l:1000,litre:1000,litres:1000,pint:568,pints:568}[m[2].toLowerCase()]||1; return +m[1]*f; }
+  const c=String(label).match(/\b(\d+)s\b|(\d+)\s?pack/i); return c?+(c[1]||c[2]):null; }
+function optionsFor(product){ return (wopts&&wopts.products&&wopts.products[product])||null; }
+function resolveProduct(product){
+  const o=optionsFor(product), sw=run&&run.swaps&&run.swaps[product];
+  if(sw){ const opt=o&&o.options.find(x=>x.label===sw); return {label:sw,price:opt?opt.price:null,offer:opt&&opt.offer,swap:"chosen"}; }
+  const tier=run&&run.tier; if(!tier||!o) return null;
+  const cands=o.options.filter(x=>x.tier===tier&&!x.out&&x.price!=null); if(!cands.length) return null;
+  const want=sizeVal(product), dist=x=>{const v=sizeVal(x.label); return want&&v?Math.abs(Math.log(v/want)):1;};
+  cands.sort((a,b)=>(dist(a)-dist(b))||(a.price-b.price));
+  return cands[0].label===product?null:{label:cands[0].label,price:cands[0].price,offer:cands[0].offer,swap:tier}; }
 
 function buildList(){
   const map=new Map();
@@ -170,11 +206,12 @@ function buildList(){
     if(b.weekend){ (b.weekendPicks||[]).forEach(id=>{const o=B.weekend.find(x=>x.id===id); if(o) o.buy.forEach(i=>add(i.product,i.aisle,i.qty,i.price,"Weekend breakfast"));});
       (b.weekendCustom||[]).forEach(x=>add(x.text,"Other",x.qty||1,null,"Weekend breakfast")); }
   }
-  (run.meals||[]).forEach(id=>{const m=mealById(id); if(!m)return; m.buy.forEach(b=>add(b.product,b.aisle,b.qty,b.price,m.name));});
+  mergeMeals((run.meals||[]).map(id=>mealById(id)).filter(Boolean)).forEach((s,p)=>{ add(p,s.aisle,s.packs,s.price,s.srcs[0]); const e=map.get(p); s.srcs.slice(1).forEach(n=>{if(!e.srcs.includes(n))e.srcs.push(n);}); if(s.srcs.length>1) e.shared=s.srcs.length; });
   (run.cupboard||[]).forEach(c=>add(c,"Food Cupboard",1,null,"Cupboard"));
   (run.extras||[]).forEach(x=>add(x.text,"Other",x.qty||1,null,"Extra"));
   const items=[...map.values()];
-  items.forEach(e=>{e.base=e.qty; if(run.edits&&run.edits[e.key]!=null) e.qty=run.edits[e.key];});
+  items.forEach(e=>{e.base=e.qty; if(run.edits&&run.edits[e.key]!=null) e.qty=run.edits[e.key];
+    const r=resolveProduct(e.product); if(r){ e.orig=e.product; e.origPrice=e.price; e.product=r.label; if(r.price!=null) e.price=r.price; e.offer=r.offer||null; e.note=null; e.swap=r.swap; } });
   return items;
 }
 function totals(items){let sum=0,unpriced=0,count=0;items.forEach(e=>{if(e.qty<=0)return;count+=e.qty;if(e.price!=null)sum+=e.price*e.qty;else unpriced++;});return {sum,unpriced,count};}
@@ -212,6 +249,8 @@ async function newRun(mode,dinners,mealSource){
   if(!db||!master) return;
   const latest=runs.reduce((a,r)=>(!a||r.delivery>a)?r.delivery:a,null);
   let delivery=nextMonday(latest&&latest>isoD(new Date())?latest:null);
+  const freeOrder=((wstate&&wstate.orders)||[]).map(o=>o.date).filter(d=>d&&d>=isoD(new Date())&&!runs.some(r=>r.delivery===d)).sort()[0];
+  if(freeOrder) delivery=freeOrder;
   while(runs.some(r=>r.delivery===delivery)) delivery=isoD(new Date(parseD(delivery).getTime()+7*DAY));
   const prev=[...runs].sort((a,b)=>b.delivery.localeCompare(a.delivery)).find(r=>r.breakfast);
   const body=blankRun(delivery,prev&&prev.breakfast); const ref=db.collection("runs").doc();
@@ -240,6 +279,8 @@ function renderRunPick(){
   list.sort((a,b)=>b.delivery.localeCompare(a.delivery));
   sel.disabled=false;
   sel.innerHTML=list.map(r=>`<option value="${esc(r.id)}" ${run&&r.id===run.id?"selected":""}>${esc(fmtD(r.delivery))}${r.status==="ready"?" · ready":r.status==="filled"?" · filled":""}</option>`).join("");
+  const d=deliveryFor(run); sel.classList.toggle("nobook",d.k==="none"); sel.classList.toggle("booked",d.k==="booked");
+  $("dstat").innerHTML=deliveryPill(d);
 }
 function renderBanner(){
   const b=$("banner"); if(!run){b.innerHTML="";return;}
@@ -256,7 +297,7 @@ function paneWeek(){
     <div class="group"><h2>This week</h2><p class="lead">Set the delivery you've booked and how many meals you're cooking at home. Each meal is one recipe.</p></div>
     <div class="field"><label for="delivery">Delivery date</label>
       <input type="date" id="delivery" value="${esc(run.delivery)}">
-      <span class="cutoff">Amend by 11pm ${esc(cut)}</span></div>
+      <span class="cutoff">Amend by 11pm ${esc(cut)}</span>${deliveryPill(deliveryFor(run))}</div>
     <div class="group"><h3>Meals at home</h3>
       <div class="chips">${[1,2,3,4,5,6,7].map(n=>`<button type="button" class="chip" data-dinners="${n}" aria-pressed="${run.dinners===n}">${n}</button>`).join("")}</div></div>
     ${paneBreakfastChoices()}
@@ -344,24 +385,31 @@ function paneList(){
   let h=`<section class="pane">
     <div class="group"><h2>The list</h2><p class="lead">${modeOf()==="manual"?"Check quantities, add extras, then mark it ready.":"Built for you. Change anything below, then mark it ready."}</p></div>`;
   if(modeOf()!=="manual") h+=weekSummary();
+  h+=tierBar(items);
+  const stk=stockFor(), sr=reqState("stock");
+  if(sr&&sr.s!=="done") h+=statusLine("stock");
+  else if(stk){ const c={out:0,missing:0,price:0}; items.forEach(e=>{const x=stk[e.product]; if(x&&e.qty>0&&c[x.status]!=null) c[x.status]++;});
+    h+=`<div class="banner ${c.out||c.missing?"warn":"ready"}"><span>Stock checked ${esc(ago(wstate.stock.checkedAt))}: ${c.out||c.missing||c.price?[c.out?`${c.out} out of stock`:"",c.missing?`${c.missing} not found`:"",c.price?`${c.price} price change${c.price>1?"s":""}`:""].filter(Boolean).join(" · "):"everything's available"}.</span></div>`; }
   if(run.report) h+=`<div class="banner ready"><div><h3 style="margin-bottom:4px">Agent report</h3><div class="report">${esc(run.report)}</div></div></div>`;
   if(run.status==="ready") h+=`<div class="banner ready"><span>${changedSinceReady?"Changed since you marked it ready.":"Ready. The PC agent will add it to your booked order."}</span></div>`;
   if(t.sum>0&&t.sum<min) h+=`<div class="banner warn"><span>About ${money(t.sum)} of priced items, under the ${money(min)} minimum order.</span></div>`;
   h+=`<div class="receipt"><div class="head"><span>Delivery ${esc(fmtD(run.delivery))}</span><span>${t.count} items</span></div>`;
   AISLES.forEach(a=>{const list=byAisle[a]; if(!list) return; list.sort((x,y)=>x.product.localeCompare(y.product));
-    h+=`<div class="aisle">${esc(a)}</div>`+list.map(e=>`<div class="line ${e.qty<=0?"removed":""}"><span class="p">${esc(e.product)}<span class="src">${esc(e.srcs.join(" · "))}</span></span>
+    h+=`<div class="aisle">${esc(a)}</div>`+list.map(e=>`<div class="line ${e.qty<=0?"removed":""}"><button type="button" class="p" data-variant="${esc(e.key)}">${esc(e.product)}${e.swap?`<span class="tag swap">${esc(e.swap==="chosen"?"your pick":e.swap)}</span>`:""}${e.shared?`<span class="tag">shared by ${e.shared}</span>`:""}<span class="src">${esc(e.srcs.join(" · "))}</span></button>
       ${qtyCtl(e.qty,`data-edit="${esc(e.key)}" data-base="${e.base}"`,e.qty>0)}
-      <span class="amt">${e.price!=null&&e.qty>0?money(e.price*e.qty):e.qty>0?"–":""}${e.offer&&e.qty>0?`<span class="offer">${esc(e.offer)}</span>`:""}${e.note&&e.qty>0?`<span class="offer warnnote" title="${esc(e.note)}">Not found on Waitrose</span>`:""}</span></div>`).join("");});
+      <span class="amt">${e.price!=null&&e.qty>0?money(e.price*e.qty):e.qty>0?"–":""}${e.offer&&e.qty>0?`<span class="offer">${esc(e.offer)}</span>`:""}${e.note&&e.qty>0?`<span class="offer warnnote" title="${esc(e.note)}">Not found on Waitrose</span>`:""}${e.qty>0?stockBadge(e):""}</span></div>`).join("");});
   const pc=master.pricesCheckedAt;
   const reqPending=!!(priceReq&&priceReq.requestedAt&&(!pc||Date.parse(priceReq.requestedAt)>Date.parse(pc)));
   h+=`<div class="totals"><div class="grand"><span>Estimate</span><span>${money(t.sum)}</span></div>${t.unpriced?`<div class="muted"><span>${t.unpriced} item${t.unpriced>1?"s":""} without a price yet</span><span></span></div>`:""}</div>
-    <div class="pricecheck"><span>${pc?`Waitrose prices checked ${esc(fmtD(pc.slice(0,10)))}`:"Prices from your past orders"}${reqPending?" · new check requested":""}</span><button class="link" type="button" id="priceCheck" ${reqPending?"disabled":""}>${reqPending?"Requested":"Check latest prices"}</button></div></div>
+    <div class="pricecheck"><span>${pc?`Waitrose prices checked ${esc(fmtD(pc.slice(0,10)))}`:"Prices from your past orders"}${reqPending?" · new check requested":""}</span><span class="pclinks"><button class="link" type="button" id="priceCheck" ${reqPending?"disabled":""}>${reqPending?"Requested":"Check latest prices"}</button><button class="link" type="button" id="stockCheck" ${busy("stock")?"disabled":""}>${busy("stock")?"Checking stock…":"Check Waitrose stock"}</button></span></div></div>
     <div class="field"><label for="extraAdd">Add an extra</label>
       <div class="addrow"><input type="text" id="extraAdd" placeholder="e.g. birthday candles, lemons x2"><button class="btn" type="button" id="extraAddBtn">Add</button></div></div>
     <div class="chips">
       <button class="btn primary" type="button" id="ready">${run.status==="ready"?(changedSinceReady?"Mark ready again":"Ready ✓"):"Mark ready"}</button>
       ${run.status==="ready"?'<button class="btn" type="button" id="unready">Back to planning</button>':""}
       <button class="btn" type="button" id="copy">Copy list</button>
+      ${deliveryFor(run).k==="none"?'<button class="btn" type="button" id="goBook2">Book a delivery</button>':""}
+      <button class="btn ghost danger" type="button" id="clearList">${clearArm?"Tap again to clear everything":"Clear list"}</button>
     </div>
   </section>`;
   return h;
@@ -429,6 +477,8 @@ function renderBar(){
 function render(){
   document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-selected",String(b.dataset.view===view)));
   const main=$("main");
+  document.querySelector(".runtop").hidden=view==="home";
+  if(view==="home"){ $("steps").hidden=true; document.querySelector(".bar").hidden=true; $("banner").innerHTML=""; renderRunPick(); main.innerHTML=db===null?'<section class="pane"><div class="empty">Sign in to load your shared lists.</div></section>':paneHome(); renderW(); return; }
   if(view==="recipes"){ $("steps").hidden=true; document.querySelector(".bar").hidden=true; $("banner").innerHTML=""; renderRunPick(); main.innerHTML=master?paneRecipes():'<section class="pane"><div class="empty">Loading your recipes…</div></section>'; renderRec(); return; }
   $("steps").hidden=false; document.querySelector(".bar").hidden=false;
   renderSteps(); renderRunPick(); renderBanner();
@@ -436,7 +486,192 @@ function render(){
   if(!master){ main.innerHTML='<section class="pane"><div class="empty">Loading your lists…<br>If this stays empty, the master list hasn\'t been loaded yet; run seed-data.sql from the setup guide.</div></section>'; renderBar(); return; }
   if(!run){ main.innerHTML='<section class="pane"><div class="empty">No week planned yet. Tap <b>New week</b> to start.</div></section>'; renderBar(); return; }
   main.innerHTML=[paneWeek,paneMeals,paneBreakfast,paneCupboard,paneHouse,paneList][step]();
-  renderBar();
+  renderBar(); renderW();
+}
+
+/* ---------- Waitrose: deliveries, booking, basket, stock (the PC agent does the Waitrose side) ---------- */
+function ago(iso){ if(!iso) return "never"; const m=Math.round((Date.now()-Date.parse(iso))/60000); if(m<1) return "just now"; if(m<60) return `${m} min ago`; const h=Math.round(m/60); if(h<24) return `${h} hour${h>1?"s":""} ago`; return fmtD(iso.slice(0,10)); }
+function deliveryFor(r){ if(!r||!wstate) return {k:"unknown"}; const o=(wstate.orders||[]).find(o=>o.date===r.delivery); if(o) return {k:"booked",o};
+  const h=wstate.held; if(h&&h.date===r.delivery) return {k:"held",h}; return {k:"none"}; }
+function shortWin(w){ return String(w||"").replace(/:00/g,"").replace(/\s*-\s*/,"–"); }
+function deliveryPill(d){
+  if(d.k==="booked") return `<button type="button" class="dpill ok" data-home="basket">Booked · ${esc(shortWin(d.o.window))}</button>`;
+  if(d.k==="held") return `<span class="dpill held">Slot held · check out in Waitrose</span>`;
+  if(d.k==="none") return `<button type="button" class="dpill none" data-home="book">No delivery booked</button>`;
+  return ""; }
+async function request(name,body){
+  if(!db) return; const doc=Object.assign({},body,{requestedAt:new Date().toISOString()});
+  reqs[name]=Object.assign({},doc,{status:"queued"}); render();
+  try{ await db.doc("requests/"+name).set(doc); }catch(e){ reqs[name]=Object.assign({},doc,{status:"failed",failedAt:new Date(Date.now()+1000).toISOString(),message:"Couldn't send that to the PC agent: "+((e&&e.message)||"")}); render(); } }
+function reqState(name){ const r=reqs[name]; if(!r||!r.requestedAt) return null; const t=Date.parse(r.requestedAt);
+  if(r.doneAt&&Date.parse(r.doneAt)>=t) return {s:"done",m:r.message||"Done."};
+  if(r.failedAt&&Date.parse(r.failedAt)>=t) return {s:"failed",m:r.message||"That didn't work."};
+  if(r.status==="working") return {s:"working",m:r.message||"Working…"};
+  const waited=(Date.now()-t)/60000;
+  return {s:"queued",m:waited>3?"Still waiting for the PC agent. Is the PC on, with the agent running?":"Sent. The PC agent picks this up within a minute while the PC is on."}; }
+function busy(name){ const r=reqState(name); return !!r&&(r.s==="queued"||r.s==="working"); }
+function statusLine(name){ const r=reqState(name); if(!r) return ""; return `<p class="status s-${r.s}" role="status">${r.s==="working"||r.s==="queued"?'<span class="dot" aria-hidden="true"></span>':""}${esc(r.m).replace(/\n/g,"<br>")}</p>`; }
+function stockFor(){ const st=wstate&&wstate.stock; return st&&run&&st.runId===run.id?st.items||null:null; }
+function stockBadge(e){ const st=stockFor(); const x=st&&st[e.product]; if(!x) return "";
+  if(x.status==="out") return '<span class="offer warnnote">Out of stock</span>';
+  if(x.status==="missing") return '<span class="offer warnnote">Not found</span>';
+  if(x.status==="price"&&x.price!=null) return `<span class="offer">Now ${money(x.price)}</span>`; return ""; }
+function tierBar(items){
+  const cur=run.tier||null, haveOpts=!!(wopts&&wopts.products&&Object.keys(wopts.products).length);
+  let saving=0,n=0; items.forEach(e=>{ if(e.swap&&e.swap!=="chosen"&&e.qty>0){ n++; if(e.price!=null&&e.origPrice!=null) saving+=(e.origPrice-e.price)*e.qty; } });
+  const note=!cur?"Showing your usual products. Pick a level to swap brands across the list.":
+    !haveOpts?"Sizes and brands haven't been fetched from Waitrose yet.":
+    n?`${n} product${n>1?"s":""} swapped · ${saving>=0?"saves":"adds"} about ${money(Math.abs(saving))}`:"No swaps found at this level.";
+  return `<div class="tierbar"><div class="seg" role="group" aria-label="Product level">${TIERS.map(([k,l])=>`<button type="button" data-tier="${k}" aria-pressed="${cur===k}">${l}</button>`).join("")}</div>
+    <p class="hint">${esc(note)}${cur&&!haveOpts?` <button class="link" type="button" id="fetchOptions" ${busy("options")?"disabled":""}>${busy("options")?"Fetching…":"Fetch them now"}</button>`:""}</p>${busy("options")?statusLine("options"):""}</div>`; }
+function clearList(){ change(r=>{ r.meals=[]; r.extraMeals=[]; r.staples={}; (master.staples||[]).forEach(i=>{r.staples[i.id]=0;}); r.topups={}; r.drinks={}; r.household={};
+  r.cupboard=[]; r.extras=[]; r.edits={}; r.auto={}; r.swaps={}; r.status="planning";
+  r.breakfast=Object.assign(defaultBreakfast(),{zoe:[],owen:[],cerealQty:0}); }); }
+function currentPlan(){ const today=isoD(new Date()); if(run&&run.delivery>=today) return run; return [...runs].filter(r=>r.delivery>=today).sort((a,b)=>a.delivery.localeCompare(b.delivery))[0]||null; }
+function paneHome(){
+  const orders=((wstate&&wstate.orders)||[]).filter(o=>o.date>=isoD(new Date())).sort((a,b)=>a.date.localeCompare(b.date));
+  const next=orders[0], held=wstate&&wstate.held, plan=currentPlan();
+  let card;
+  if(next) card=`<div class="dcard ok"><div class="dk">Next delivery</div><div class="dv">${esc(fmtD(next.date,{weekday:"long"}))} · ${esc(shortWin(next.window))}</div>
+    <div class="ds">${next.total!=null?money(next.total)+" · ":""}${(next.items||[]).length} items${next.amendInfo?" · "+esc(next.amendInfo):""}</div></div>`;
+  else if(held) card=`<div class="dcard held"><div class="dk">Slot held</div><div class="dv">${esc(fmtD(held.date,{weekday:"long"}))} · ${esc(shortWin(held.time))}</div>
+    <div class="ds">Check out in the Waitrose app to keep it. Waitrose only holds a slot for a short time.</div></div>`;
+  else card=`<div class="dcard none"><div class="dk">Next delivery</div><div class="dv">No delivery booked</div><div class="ds">Make a list, then book a slot from here.</div></div>`;
+  const amendable=next&&next.amendable!==false;
+  const planSub=plan?`${plan.status==="filled"?"Sent to Waitrose":plan.status==="ready"?"Ready":"Draft"} list for ${fmtD(plan.delivery)}`:"Start this week's list";
+  let h=`<section class="pane home">${card}
+    <div class="sync">${!wstate?"Waiting for the PC agent to check Waitrose.":wstate.signedIn===false?'<span class="warntxt">The PC agent isn\'t signed in to Waitrose. Double-click login.bat on the PC.</span>':`Checked ${esc(ago(wstate.syncedAt))}`}
+      <button class="link" type="button" data-home="sync" ${busy("sync")?"disabled":""}>${busy("sync")?"Checking…":"Refresh"}</button></div>
+    ${busy("sync")||(reqState("sync")||{}).s==="failed"?statusLine("sync"):""}
+    <div class="acts">
+      <button type="button" class="act primary" data-home="plan"><span class="at">${plan?"Carry on planning":"Plan a shop"}</span><span class="as">${esc(planSub)}</span></button>
+      ${amendable?`<button type="button" class="act" data-home="quick"><span class="at">Add to ${esc(fmtD(next.date))} delivery</span><span class="as">A few extra items, straight into the order</span></button>`:""}
+      <button type="button" class="act" data-home="book"><span class="at">Book a delivery</span><span class="as">Choose a slot · £40 minimum list</span></button>
+    </div>
+    <div class="minor"><button class="link" type="button" data-home="basket">Basket</button><span aria-hidden="true">·</span>
+      <button class="link" type="button" data-home="stock" ${plan?"":"disabled"}>Stock check</button><span aria-hidden="true">·</span>
+      <button class="link" type="button" data-home="inv">Inventory</button>${plan?`<span aria-hidden="true">·</span><button class="link" type="button" data-home="new">New list</button>`:""}</div>`;
+  if(orders.length>1) h+=`<p class="hint">Also booked: ${orders.slice(1).map(o=>esc(fmtD(o.date))+" "+esc(shortWin(o.window))).join(", ")}</p>`;
+  return h+`</section>`; }
+function homeClick(t){
+  const a=t.dataset.home; if(!a) return false;
+  if(a==="plan"){ view="plan"; const p=currentPlan(); if(p){ if(!run||run.id!==p.id) run=clone(p); render(); } else { render(); if(master) openSheet(true); } window.scrollTo({top:0}); return true; }
+  if(a==="new"){ view="plan"; render(); if(master) openSheet(true); return true; }
+  if(a==="quick"){ const o=((wstate&&wstate.orders)||[]).filter(o=>o.date>=isoD(new Date())).sort((x,y)=>x.date.localeCompare(y.date))[0]; if(!o) return true; wsheet={kind:"quick",date:o.date,items:[],q:""}; loadCatalogue().then(renderW); renderW(); return true; }
+  if(a==="book"){ openSlots(); return true; }
+  if(a==="basket"){ wsheet={kind:"basket"}; const tr=wstate&&wstate.trolley; if(!busy("basket")&&(!tr||Date.now()-Date.parse(tr.checkedAt||0)>10*60000)) request("basket",{action:"check"}); renderW(); return true; }
+  if(a==="stock"){ const p=currentPlan(); if(!p) return true; view="plan"; run=clone(p); step=5; showAll=!MODES[modeOf()].steps.includes(5); render();
+    request("stock",{runId:run.id,items:buildList().filter(e=>e.qty>0).map(e=>({product:e.product,price:e.price==null?null:e.price}))}); return true; }
+  if(a==="inv"){ openInv(); return true; }
+  if(a==="sync"){ request("sync",{}); return true; }
+  return false; }
+function openSlots(){
+  if(!run){ const p=currentPlan(); if(p) run=clone(p); }
+  wsheet={kind:"slots",day:null,slot:null,confirm:false};
+  const sl=wstate&&wstate.slots; if(!busy("slots")&&(!sl||Date.now()-Date.parse(sl.checkedAt||0)>20*60000)) request("slots",{});
+  renderW(); }
+function renderW(){
+  const el=$("wsheet"); if(!el) return;
+  if(!wsheet){ el.hidden=true; el.innerHTML=""; return; }
+  const keep=el.querySelector(".sheet-card"), top=keep?keep.scrollTop:0, focusId=document.activeElement&&document.activeElement.id;
+  const title={slots:"Book a delivery",quick:"Add to delivery",basket:"Basket",variant:"Choose a product"}[wsheet.kind];
+  el.hidden=false;
+  el.innerHTML=`<div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="wsTitle"><div class="shead"><h2 id="wsTitle">${title}</h2><button class="link" type="button" id="wsClose">Done</button></div>${
+    wsheet.kind==="slots"?wsSlots():wsheet.kind==="quick"?wsQuick():wsheet.kind==="basket"?wsBasket():wsVariant()}</div>`;
+  const c=el.querySelector(".sheet-card"); if(c) c.scrollTop=top;
+  if(focusId){ const f=document.getElementById(focusId); if(f) f.focus({preventScroll:true}); } }
+function wsSlots(){
+  if(!run) return `<p class="lead">Plan a list first, then book a slot for it.</p><button class="btn primary big" type="button" data-ws="plan">Plan a shop</button>`;
+  const t=totals(buildList()), min=master.minimumOrder||40, d=deliveryFor(run);
+  const rb=reqState("book");
+  if(rb&&rb.s!=="done"&&rb.s!=="failed"||rb&&rb.s==="done"&&wsheet.sent) return `<p class="lead">Booking ${esc(wsheet.slotLabel||"your slot")}.</p>${statusLine("book")}${rb.s==="done"?'<p class="hint">Now open the Waitrose app, check the trolley and check out. Your slot is only held for a short time until you do.</p>':""}`;
+  let h=`<p class="lead">For your list for ${esc(fmtD(run.delivery))}: ${t.count} items, about ${money(t.sum)}.</p>`;
+  if(d.k==="booked") h+=`<div class="banner ready"><span>This list already has a delivery: ${esc(fmtD(d.o.date))} ${esc(shortWin(d.o.window))}. Booking another slot creates a second order.</span></div>`;
+  if(t.sum<min) h+=`<div class="banner warn"><span>Waitrose needs at least ${money(min)} to check out. Add about ${money(min-t.sum)} more to the list, then book.</span></div>`;
+  if(rb&&rb.s==="failed") h+=statusLine("book");
+  const sl=wstate&&wstate.slots, list=(sl&&sl.list)||[];
+  if(busy("slots")) h+=statusLine("slots");
+  else h+=`<p class="hint">${sl?`Slots checked ${esc(ago(sl.checkedAt))}.`:"No slots fetched yet."} <button class="link" type="button" data-ws="refreshSlots">Refresh</button></p>`;
+  if(!list.length) return h;
+  const days=[...new Set(list.map(s=>s.date))]; const day=wsheet.day&&days.includes(wsheet.day)?wsheet.day:days[0];
+  h+=`<div class="daychips">${days.map(dd=>`<button type="button" class="chip txt sm" data-wsday="${dd}" aria-pressed="${dd===day}">${esc(fmtD(dd))}</button>`).join("")}</div>`;
+  h+=`<div class="slotgrid">${list.filter(s=>s.date===day).map(s=>`<button type="button" class="slot" data-wsslot="${esc(s.id)}" aria-pressed="${wsheet.slot===s.id}">${esc(s.time)}${s.green?'<span class="green">green</span>':""}</button>`).join("")}</div>`;
+  const pick=list.find(s=>s.id===wsheet.slot);
+  const can=pick&&t.sum>=min&&!readOnly;
+  h+=`<button class="btn primary big" type="button" data-ws="book" ${can?"":"disabled"}>${pick?(wsheet.confirm?`Confirm: book ${esc(fmtD(pick.date))}, ${esc(pick.time)}`:`Book ${esc(fmtD(pick.date))}, ${esc(pick.time)}`):"Choose a slot"}</button>
+    <p class="hint">The PC agent reserves the slot and puts this list in your Waitrose trolley. You check out in the Waitrose app; it never pays for you.</p>`;
+  return h; }
+async function bookSlot(){
+  const list=(wstate&&wstate.slots&&wstate.slots.list)||[], pick=list.find(s=>s.id===wsheet.slot); if(!pick||!run) return;
+  wsheet.sent=true; wsheet.slotLabel=`${fmtD(pick.date)}, ${pick.time}`;
+  change(r=>{ r.finalList=buildList().filter(e=>e.qty>0).map(e=>({product:e.product,qty:e.qty,price:e.price==null?null:e.price,aisle:e.aisle})); r.status="booking"; r.delivery=pick.date; });
+  clearTimeout(saveT); await flush();
+  await request("book",{slotId:pick.id,runId:run.id,time:pick.time}); renderW(); }
+function qaResults(){
+  const q=(wsheet.q||"").trim(); if(q.length<2) return '<p class="hint">Type at least two letters.</p>';
+  if(!catalogue) return '<p class="hint">Loading products…</p>';
+  const hits=searchCat(q);
+  return `<div class="results">${hits.map(c=>`<button type="button" class="result" data-qapick="${esc(c.id)}"><span class="rn">${esc(productLabel(c))}</span><span class="rp mono">${c.price!=null?money(c.price):""}</span></button>`).join("")}
+    <button type="button" class="result ask" data-qafree="1"><span class="rn">Add “${esc(q)}” as typed</span></button></div>`; }
+function wsQuick(){
+  const rq=reqState("quickadd");
+  if(wsheet.sent&&rq) return `<p class="lead">Adding to your ${esc(fmtD(wsheet.date))} delivery.</p>${statusLine("quickadd")}`;
+  const n=wsheet.items.reduce((a,i)=>a+i.qty,0);
+  return `<p class="lead">Items go straight into your booked order for ${esc(fmtD(wsheet.date))}. You confirm the changes in the Waitrose app.</p>
+    <input type="text" id="qaQ" value="${esc(wsheet.q||"")}" placeholder="Search, e.g. lemons" autocomplete="off"><div id="qaRes">${qaResults()}</div>
+    ${wsheet.items.length?`<div class="rows">${wsheet.items.map((i,k)=>`<div class="row"><span></span><div class="txt"><div class="t1">${esc(i.product)}</div></div>${qtyCtl(i.qty,`data-qaqty="${k}"`,true)}</div>`).join("")}</div>`:""}
+    <button class="btn primary big" type="button" data-ws="quickGo" ${n?"":"disabled"}>${n?`Add ${n} item${n>1?"s":""} to the order`:"Pick something to add"}</button>`; }
+function normName(s){ return String(s||"").toLowerCase().replace(/&/g," and ").replace(/[^a-z0-9.]+/g," ").trim(); }
+function onListNames(){ const set=new Set(); if(run) buildList().filter(e=>e.qty>0).forEach(e=>set.add(normName(e.product))); return set; }
+function basketRows(items){ const on=onListNames();
+  return `<div class="rows">${items.map(i=>{ const lab=(i.name+(i.size?" "+i.size:"")); const extra=run&&!on.has(normName(lab));
+    return `<div class="row"><span></span><div class="txt"><div class="t1">${esc(lab)}${extra?' <span class="tag due">not on your list</span>':""}</div></div><span class="mono">×${esc(i.qty)}${i.price!=null?` · ${money(i.price)}`:i.cost!=null?` · ${money(i.cost)}`:""}</span></div>`; }).join("")}</div>`; }
+function wsBasket(){
+  const tr=wstate&&wstate.trolley, orders=((wstate&&wstate.orders)||[]).filter(o=>o.date>=isoD(new Date()));
+  let h=busy("basket")||reqState("basket")&&reqState("basket").s==="failed"?statusLine("basket"):`<p class="hint">${tr?`Checked ${esc(ago(tr.checkedAt))}.`:"Not checked yet."} <button class="link" type="button" data-ws="basketCheck">Refresh</button></p>`;
+  if(reqState("basket")&&reqState("basket").s==="done"&&wsheet.cleared) h+=statusLine("basket");
+  h+=`<h3>In your Waitrose trolley</h3>`;
+  if(!tr) h+='<p class="muted">The PC agent hasn\'t looked yet.</p>';
+  else if(tr.amending) h+=`<div class="banner warn"><span>Your trolley is an order being amended. Finish or cancel those changes in the Waitrose app.</span></div>${basketRows(tr.items||[])}`;
+  else h+=tr.items&&tr.items.length?basketRows(tr.items)+`<p class="hint">About ${money(tr.total||0)}.</p>`:'<p class="muted">Empty.</p>';
+  const canClear=tr&&!tr.amending&&(tr.items||[]).length&&!busy("basket");
+  h+=`<button class="btn ${wsheet.confirm?"primary":""} big" type="button" data-ws="clear" ${canClear?"":"disabled"}>${wsheet.confirm?"Tap again to empty the trolley":"Clear basket"}</button>
+    <p class="hint">Clearing empties the trolley only. It never touches your delivery slot or an order you've already placed.</p>`;
+  orders.forEach(o=>{ h+=`<h3>Booked for ${esc(fmtD(o.date))}, ${esc(shortWin(o.window))}</h3>${(o.items||[]).length?basketRows(o.items):'<p class="muted">No items read.</p>'}`; });
+  return h; }
+function wsVariant(){
+  const key=wsheet.key, e=buildList().find(x=>x.key===key); if(!e) return '<p class="muted">That item is no longer on the list.</p>';
+  const o=optionsFor(key); const cur=e.product;
+  let h=`<p class="lead">${esc(key)}</p><div class="inline"><span class="muted">Quantity</span>${qtyCtl(e.qty,`data-edit="${esc(e.key)}" data-base="${e.base}"`,e.qty>0)}</div>`;
+  if(!o||!o.options.length){ h+=`<p class="hint">${o?"No other sizes or brands found on Waitrose.":"Sizes and brands for this haven't been fetched yet."}</p>`;
+    if(!o) h+=`<button class="btn" type="button" data-ws="fetchOne" ${busy("options")?"disabled":""}>${busy("options")?"Fetching…":"Find sizes on Waitrose"}</button>${statusLine("options")}`; return h; }
+  const order={premium:0,regular:1,economy:2}; const opts=[...o.options].sort((a,b)=>(order[a.tier]-order[b.tier])||((a.price||0)-(b.price||0)));
+  h+=`<div class="results">${opts.map(x=>`<button type="button" class="result" data-wsopt="${esc(x.label)}" ${x.out?"disabled":""} aria-pressed="${x.label===cur}"><span class="rn">${esc(x.label)} <span class="tag ${x.tier==="premium"?"on":""}">${esc(x.tier)}</span>${x.out?' <span class="tag due">out of stock</span>':""}${x.label===cur?' <span class="tag">chosen</span>':""}</span><span class="rp mono">${x.price!=null?money(x.price):""}</span></button>`).join("")}</div>
+    ${run.swaps&&run.swaps[key]?'<button class="link" type="button" data-ws="useUsual">Go back to the usual product</button>':""}
+    <p class="hint">From Waitrose ${esc(ago(o.checkedAt))}.</p>`;
+  return h; }
+function wsClick(t){
+  if(t.id==="wsClose"){ wsheet=null; renderW(); render(); return; }
+  const a=t.dataset.ws;
+  if(a==="plan"){ wsheet=null; renderW(); homeClick({dataset:{home:"plan"}}); return; }
+  if(a==="refreshSlots"){ request("slots",{}); renderW(); return; }
+  if(t.dataset.wsday){ wsheet.day=t.dataset.wsday; wsheet.slot=null; wsheet.confirm=false; renderW(); return; }
+  if(t.dataset.wsslot){ wsheet.slot=t.dataset.wsslot; wsheet.confirm=false; renderW(); return; }
+  if(a==="book"){ if(!wsheet.confirm){ wsheet.confirm=true; renderW(); return; } bookSlot(); return; }
+  if(t.dataset.qapick){ const c=catalogue.find(x=>x.id===t.dataset.qapick); if(c){ wsheet.items.push({product:productLabel(c),qty:1}); wsheet.q=""; renderW(); const q=$("qaQ"); if(q) q.focus(); } return; }
+  if(t.dataset.qafree){ const v=(wsheet.q||"").trim(); if(v){ wsheet.items.push({product:v,qty:1}); wsheet.q=""; renderW(); } return; }
+  if(t.dataset.qaqty!=null){ const k=+t.dataset.qaqty, d=+t.dataset.d; const it=wsheet.items[k]; it.qty+=d; if(it.qty<=0) wsheet.items.splice(k,1); renderW(); return; }
+  if(a==="quickGo"){ const items=wsheet.items.slice(); wsheet.sent=true;
+    if(run&&run.delivery===wsheet.date) change(r=>{ r.extras=[...(r.extras||[]),...items.map(i=>({text:i.product,qty:i.qty,quick:true}))]; });
+    request("quickadd",{date:wsheet.date,items}).then(renderW); renderW(); return; }
+  if(a==="basketCheck"){ request("basket",{action:"check"}); renderW(); return; }
+  if(a==="clear"){ if(!wsheet.confirm){ wsheet.confirm=true; renderW(); setTimeout(()=>{ if(wsheet&&wsheet.confirm){ wsheet.confirm=false; renderW(); } },4000); return; }
+    wsheet.confirm=false; wsheet.cleared=true; request("basket",{action:"clear"}); renderW(); return; }
+  if(t.dataset.wsopt){ const key=wsheet.key, lab=t.dataset.wsopt; change(r=>{ r.swaps=r.swaps||{}; if(lab===key) delete r.swaps[key]; else r.swaps[key]=lab; }); wsheet=null; renderW(); return; }
+  if(a==="useUsual"){ const key=wsheet.key; change(r=>{ if(r.swaps) delete r.swaps[key]; }); wsheet=null; renderW(); return; }
+  if(a==="fetchOne"){ request("options",{products:[wsheet.key]}); renderW(); return; }
+  if(t.dataset.edit!=null){ const k=t.dataset.edit,base=+t.dataset.base,d=+t.dataset.d;
+    change(r=>{r.edits=r.edits||{};const cur=(r.edits[k]!=null)?r.edits[k]:base;const nv=Math.max(0,Math.min(30,cur+d));if(nv===base)delete r.edits[k];else r.edits[k]=nv;}); renderW(); return; }
 }
 
 /* ---------- recipes ---------- */
@@ -736,6 +971,7 @@ function renderInv(){
   if(!invUI||!master){el.hidden=true;el.innerHTML="";return;}
   el.hidden=false;
   const focusId=document.activeElement&&document.activeElement.id, selStart=document.activeElement&&document.activeElement.selectionStart;
+  const prevCard=el.querySelector(".sheet-card"), keepTop=prevCard?prevCard.scrollTop:0, sameTab=el.dataset.tab===invUI.tab; el.dataset.tab=invUI.tab;
   const pending=lookups.length;
   el.innerHTML=`<div class="sheet-card inv-card" role="dialog" aria-modal="true" aria-labelledby="invTitle">
     <div class="shead"><h2 id="invTitle">Inventory update</h2><button class="link" type="button" id="invClose">Done</button></div>
@@ -744,7 +980,8 @@ function renderInv(){
     ${pending&&invUI.tab!=="stock"?`<p class="hint">${pending} product${pending>1?"s":""} waiting for the PC agent to find on Waitrose.</p>`:""}
     ${invUI.tab==="stock"?invStock():invUI.tab==="recipes"?invRecipes():invItems()}
   </div>`;
-  if(focusId){const f=document.getElementById(focusId); if(f){f.focus(); try{if(selStart!=null)f.setSelectionRange(selStart,selStart);}catch(_){}}}
+  if(sameTab){ const c=el.querySelector(".sheet-card"); if(c) c.scrollTop=keepTop; }
+  if(focusId){const f=document.getElementById(focusId); if(f){f.focus({preventScroll:true}); try{if(selStart!=null)f.setSelectionRange(selStart,selStart);}catch(_){}}}
 }
 function refreshAuto(r){
   if(!r.auto) return; AUTO_KINDS.forEach(kind=>{ (r.auto[kind]||[]).slice().forEach(id=>{ const i=master[kind].find(x=>x.id===id); if(i&&!dueInfo(i,kind,r).due){ r[kind][id]=0; r.auto[kind]=r.auto[kind].filter(x=>x!==id); } }); });
@@ -814,6 +1051,8 @@ function suggest(){ change(r=>{r.meals=pickMeals(r);}); }
 document.addEventListener("click",e=>{
   const t=e.target.closest("button"); if(!t) return;
   if(rv){recClick(t);return;}
+  if(wsheet&&t.closest("#wsheet")){wsClick(t);return;}
+  if(homeClick(t)) return;
   if(t.dataset.reckind){recKind=t.dataset.reckind; if(invUI) renderInv(); render(); return;}
   if(t.dataset.rmserves){rf.serves=t.dataset.rmserves; refreshRm(); return;}
   if(t.dataset.rmmethod){const k=t.dataset.rmmethod; rf.methods=rf.methods.includes(k)?rf.methods.filter(x=>x!==k):[...rf.methods,k]; refreshRm(); return;}
@@ -870,11 +1109,19 @@ document.addEventListener("click",e=>{
   if(t.id==="ready"){change(r=>{r.status="ready";r.readyAt=new Date(Date.now()+1000).toISOString();r.finalList=buildList().filter(e=>e.qty>0).map(e=>({product:e.product,qty:e.qty,price:e.price==null?null:e.price,aisle:e.aisle}));});return;}
   if(t.id==="unready"){change(r=>{r.status="planning";});return;}
   if(t.id==="copy"){copyList(t);return;}
+  if(t.id==="clearList"){ if(!clearArm){clearArm=true;render();setTimeout(()=>{if(clearArm){clearArm=false;render();}},4000);return;} clearArm=false; clearList(); return; }
+  if(t.id==="stockCheck"){ request("stock",{runId:run.id,items:buildList().filter(e=>e.qty>0).map(e=>({product:e.product,price:e.price==null?null:e.price}))}); return; }
+  if(t.id==="goBook2"){ openSlots(); return; }
+  if(t.dataset.tier){ const v=t.dataset.tier; change(r=>{r.tier=r.tier===v?null:v;}); return; }
+  if(t.id==="fetchOptions"){ request("options",{}); return; }
+  if(t.dataset.variant!=null){ wsheet={kind:"variant",key:t.dataset.variant}; renderW(); return; }
 });
 function parseQty(v){let qty=1;const m=v.match(/^(.*?)\s*[x×]\s*(\d+)$/i);if(m){v=m[1].trim();qty=+m[2];}return {text:v,qty};}
 function addExtra(){const v=$("extraAdd").value.trim();if(!v)return;const x=parseQty(v);change(r=>{r.extras=[...(r.extras||[]),x];});}
 function addWeekend(){const v=$("wkAdd").value.trim();if(!v)return;const x=parseQty(v);change(r=>{const b=bf();b.weekendCustom=[...b.weekendCustom,x];});}
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&rv){ if(rv.mode==="edit"&&rv.id){rv.mode="view";rv.draft=null;} else rv=null; renderRec(); return; }
+document.addEventListener("keydown",e=>{
+  if(wsheet&&e.key==="Escape"){wsheet=null;renderW();return;}
+  if(wsheet&&e.key==="Enter"&&e.target.id==="qaQ"){e.preventDefault();const f=document.querySelector("#qaRes .result");if(f)f.click();return;}if(e.key==="Escape"&&rv){ if(rv.mode==="edit"&&rv.id){rv.mode="view";rv.draft=null;} else rv=null; renderRec(); return; }
   if(rv&&e.key==="Enter"&&e.target.id==="edQ"){e.preventDefault();const first=document.querySelector("#edRes .result");if(first)first.click();return;}
   if(rv&&e.key==="Enter"&&e.target.id==="edChk"){e.preventDefault();$("edChkAdd").click();return;}
   if(e.key==="Escape"&&invUI){closeInv();return;}
@@ -882,6 +1129,7 @@ document.addEventListener("keydown",e=>{if(e.key==="Escape"&&rv){ if(rv.mode==="
   if(invUI&&e.target.id==="recCheck"){e.preventDefault();$("recCheckAdd").click();return;}
   if(invUI&&e.target.id==="catQ"){e.preventDefault();const first=document.querySelector("#catRes .result");if(first)first.click();return;}if(e.target.id==="extraAdd"){e.preventDefault();addExtra();}if(e.target.id==="wkAdd"){e.preventDefault();addWeekend();}if(e.target.id==="cupAdd"){e.preventDefault();$("cupAddBtn").click();}});
 document.addEventListener("input",e=>{
+  if(wsheet&&e.target.id==="qaQ"){ wsheet.q=e.target.value; const box=$("qaRes"); if(box) box.innerHTML=qaResults(); return; }
   if(!run) return;
   if(e.target.id==="notes") change(r=>{r.notes=e.target.value;},{render:false});
   if(e.target.id==="cerealCustom") change(r=>{bf().cerealCustom=e.target.value;},{render:false});
@@ -921,7 +1169,7 @@ render();
   const c=window.claude; if(!c||!c.use){db=null;render();return;}
   db=await c.use("db"); if(!db){render();return;}
   let runsLoaded=false;
-  const maybeOpen=()=>{ if(autoOpened||!master||!runsLoaded) return; autoOpened=true; const today=isoD(new Date()); if(!runs.some(r=>r.delivery>=today)) openSheet(true); };
+  const maybeOpen=()=>{};
   db.doc("catalog/master").onSnapshot(s=>{baseMaster=s.exists?s.data():null;rebuildMaster();render();maybeOpen();},()=>{});
   db.collection("recipes").onSnapshot(qs=>{userRecipes=qs.docs.map(d=>Object.assign({id:d.id},clone(d.data())));rebuildMaster();render();renderInv();},()=>{});
   db.collection("items").onSnapshot(qs=>{userItems=qs.docs.map(d=>Object.assign({id:d.id},clone(d.data())));rebuildMaster();render();renderInv();},()=>{});
@@ -930,8 +1178,11 @@ render();
   db.doc("inventory/levels").onSnapshot(s=>{inv=s.exists?clone(s.data()):{};render();renderInv();},()=>{});
   db.doc("requests/lookups").onSnapshot(s=>{lookups=(s.exists&&s.data().items)||[];renderInv();},()=>{});
   db.doc("requests/prices").onSnapshot(s=>{priceReq=s.exists?s.data():null;render();},()=>{});
+  db.doc("waitrose/state").onSnapshot(s=>{wstate=s.exists?s.data():null;render();},()=>{});
+  db.doc("catalog/options").onSnapshot(s=>{wopts=s.exists?s.data():null;if(run)render();else renderW();},()=>{});
+  REQ_NAMES.forEach(n=>db.doc("requests/"+n).onSnapshot(s=>{reqs[n]=s.exists?s.data():null;render();},()=>{}));
   db.collection("runs").orderBy("delivery","desc").limit(40).onSnapshot(qs=>{
-    runs=qs.docs.map(d=>Object.assign({id:d.id},clone(d.data())));
+    runs=qs.docs.map(d=>normRun(Object.assign({id:d.id},clone(d.data()))));
     if(!run){ const today=isoD(new Date()); const upcoming=runs.filter(r=>r.delivery>=today).sort((a,b)=>a.delivery.localeCompare(b.delivery)); run=upcoming.length?clone(upcoming[0]):(runs[0]?clone(runs[0]):null); }
     else if(!dirty&&!inflight){ const fresh=runs.find(r=>r.id===run.id); if(fresh&&JSON.stringify(fresh)!==JSON.stringify(run)) run=clone(fresh); }
     else { const fresh=runs.find(r=>r.id===run.id); if(fresh) keepAgentFields(run,fresh); }
