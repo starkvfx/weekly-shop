@@ -155,6 +155,10 @@ const MODES={auto:{name:"Full auto",desc:"Tell it how many meals. They're picked
 let showAll=false, pickOpen=false, priceReq=null;
 let wstate=null, wopts=null, reqs={}, wsheet=null, clearArm=false;
 const REQ_NAMES=["sync","slots","book","basket","stock","quickadd","options"];
+/* Bump with index.html's data-ws when the files change together; a mismatch means part of an update wasn't uploaded. */
+const WS_VERSION="2026.10.2";
+function versionBanner(){ const v=document.documentElement.dataset.ws; return v===WS_VERSION?"":`<div class="banner warn"><span>Part of the last update is missing. Upload all four files in the app folder (app.js, index.html, standalone.css, sw.js) to GitHub, then reopen the app.</span></div>`; }
+let autoSynced=false, wsLoaded=false;
 function modeOf(){const m=run&&run.mode;return m==="meals"?"auto":(m&&MODES[m])?m:"manual";}
 function priceInfo(product){return (master&&master.prices&&master.prices[product])||null;}
 function visibleSteps(){return showAll?[0,1,2,3,4,5]:MODES[modeOf()].steps;}
@@ -280,11 +284,11 @@ function renderRunPick(){
   sel.disabled=false;
   sel.innerHTML=list.map(r=>`<option value="${esc(r.id)}" ${run&&r.id===run.id?"selected":""}>${esc(fmtD(r.delivery))}${r.status==="ready"?" · ready":r.status==="filled"?" · filled":""}</option>`).join("");
   const d=deliveryFor(run); sel.classList.toggle("nobook",d.k==="none"); sel.classList.toggle("booked",d.k==="booked");
-  $("dstat").innerHTML=deliveryPill(d);
+  const ds=$("dstat"); if(ds) ds.innerHTML=deliveryPill(d);
 }
 function renderBanner(){
   const b=$("banner"); if(!run){b.innerHTML="";return;}
-  let h='<div class="banner trial" style="margin-top:12px"><span>When you mark a week ready, the PC agent adds it to your booked Waitrose order. You confirm the order in the Waitrose app.</span></div>';
+  let h=versionBanner();
   if(readOnly) h+='<div class="banner warn" style="margin-top:8px"><span>You can view this list but not change it. Ask Owen to invite your email address.</span></div>';
   b.innerHTML=h;
 }
@@ -478,6 +482,7 @@ function render(){
   document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-selected",String(b.dataset.view===view)));
   const main=$("main");
   document.querySelector(".runtop").hidden=view==="home";
+  if(view==="home"&&db&&!autoSynced&&wsLoaded){ const st=wstate&&wstate.syncedAt; if(!st||Date.now()-Date.parse(st)>15*60000){ autoSynced=true; if(!busy("sync")) setTimeout(()=>request("sync",{}),300); } else autoSynced=true; }
   if(view==="home"){ $("steps").hidden=true; document.querySelector(".bar").hidden=true; $("banner").innerHTML=""; renderRunPick(); main.innerHTML=db===null?'<section class="pane"><div class="empty">Sign in to load your shared lists.</div></section>':paneHome(); renderW(); return; }
   if(view==="recipes"){ $("steps").hidden=true; document.querySelector(".bar").hidden=true; $("banner").innerHTML=""; renderRunPick(); main.innerHTML=master?paneRecipes():'<section class="pane"><div class="empty">Loading your recipes…</div></section>'; renderRec(); return; }
   $("steps").hidden=false; document.querySelector(".bar").hidden=false;
@@ -528,31 +533,51 @@ function clearList(){ change(r=>{ r.meals=[]; r.extraMeals=[]; r.staples={}; (ma
   r.cupboard=[]; r.extras=[]; r.edits={}; r.auto={}; r.swaps={}; r.status="planning";
   r.breakfast=Object.assign(defaultBreakfast(),{zoe:[],owen:[],cerealQty:0}); }); }
 function currentPlan(){ const today=isoD(new Date()); if(run&&run.delivery>=today) return run; return [...runs].filter(r=>r.delivery>=today).sort((a,b)=>a.delivery.localeCompare(b.delivery))[0]||null; }
+function heroDate(iso){ const d=parseD(iso); return d.toLocaleDateString("en-GB",{weekday:"short",timeZone:"UTC"})+" "+d.getUTCDate()+" "+d.toLocaleDateString("en-GB",{month:"short",timeZone:"UTC"}); }
+function niceWin(w){ const m=String(w||"").match(/(\d+)(?::(\d+))?\s*(am|pm)\s*-\s*(\d+)(?::(\d+))?\s*(am|pm)/i); if(!m) return shortWin(w);
+  const a=m[1]+(m[2]&&m[2]!=="00"?":"+m[2]:""), b=m[4]+(m[5]&&m[5]!=="00"?":"+m[5]:""); return m[3].toLowerCase()===m[6].toLowerCase()?`${a}–${b}${m[6].toLowerCase()}`:`${a}${m[3].toLowerCase()}–${b}${m[6].toLowerCase()}`; }
+function amendLine(o){ const m=String(o.amendInfo||"").match(/until\s+(.+?)\s+to amend/i); return m?`amend until ${m[1]}`:""; }
+const ICON={plus:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  cal:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>',
+  refresh:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>'};
 function paneHome(){
-  const orders=((wstate&&wstate.orders)||[]).filter(o=>o.date>=isoD(new Date())).sort((a,b)=>a.date.localeCompare(b.date));
-  const next=orders[0], held=wstate&&wstate.held, plan=currentPlan();
-  let card;
-  if(next) card=`<div class="dcard ok"><div class="dk">Next delivery</div><div class="dv">${esc(fmtD(next.date,{weekday:"long"}))} · ${esc(shortWin(next.window))}</div>
-    <div class="ds">${next.total!=null?money(next.total)+" · ":""}${(next.items||[]).length} items${next.amendInfo?" · "+esc(next.amendInfo):""}</div></div>`;
-  else if(held) card=`<div class="dcard held"><div class="dk">Slot held</div><div class="dv">${esc(fmtD(held.date,{weekday:"long"}))} · ${esc(shortWin(held.time))}</div>
-    <div class="ds">Check out in the Waitrose app to keep it. Waitrose only holds a slot for a short time.</div></div>`;
-  else card=`<div class="dcard none"><div class="dk">Next delivery</div><div class="dv">No delivery booked</div><div class="ds">Make a list, then book a slot from here.</div></div>`;
+  const today=isoD(new Date());
+  const orders=((wstate&&wstate.orders)||[]).filter(o=>o.date>=today).sort((a,b)=>a.date.localeCompare(b.date));
+  const next=orders[0], held=wstate&&wstate.held&&wstate.held.date>=today?wstate.held:null, plan=currentPlan();
+  let kind, head, sub, state;
+  if(next){ kind="ok"; head=heroDate(next.date); sub=[niceWin(next.window),amendLine(next)].filter(Boolean).join(", ");
+    state=`Booked with Waitrose${next.total!=null?`, ${money(next.total)} for ${(next.items||[]).reduce((a,i)=>a+(+i.qty||1),0)} items`:""}`; }
+  else if(held){ kind="held"; head=heroDate(held.date); sub=niceWin(held.time); state="Slot held. Check out in the Waitrose app to keep it."; }
+  else { kind="none"; head="No delivery"; sub=""; state="Plan a list, then book a slot."; }
+  const synced=wstate&&wstate.syncedAt;
+  const agentLine=busy("sync")?'<span class="dot" aria-hidden="true"></span>Checking Waitrose…':
+    wstate&&wstate.signedIn===false?'<span class="warntxt">The PC isn\'t signed in to Waitrose. Double-click login.bat on the PC.</span>':
+    synced?`Checked ${esc(ago(synced))}`:"Waiting for the PC agent";
+  const planLabel=plan?"Carry on planning":"Plan a shop";
+  const planSub=plan?`${plan.status==="filled"?"Sent to Waitrose":plan.status==="ready"?"Ready to send":"Draft"} for ${heroDate(plan.delivery)}`:"Start this week's list";
   const amendable=next&&next.amendable!==false;
-  const planSub=plan?`${plan.status==="filled"?"Sent to Waitrose":plan.status==="ready"?"Ready":"Draft"} list for ${fmtD(plan.delivery)}`:"Start this week's list";
-  let h=`<section class="pane home">${card}
-    <div class="sync">${!wstate?"Waiting for the PC agent to check Waitrose.":wstate.signedIn===false?'<span class="warntxt">The PC agent isn\'t signed in to Waitrose. Double-click login.bat on the PC.</span>':`Checked ${esc(ago(wstate.syncedAt))}`}
-      <button class="link" type="button" data-home="sync" ${busy("sync")?"disabled":""}>${busy("sync")?"Checking…":"Refresh"}</button></div>
-    ${busy("sync")||(reqState("sync")||{}).s==="failed"?statusLine("sync"):""}
-    <div class="acts">
-      <button type="button" class="act primary" data-home="plan"><span class="at">${plan?"Carry on planning":"Plan a shop"}</span><span class="as">${esc(planSub)}</span></button>
-      ${amendable?`<button type="button" class="act" data-home="quick"><span class="at">Add to ${esc(fmtD(next.date))} delivery</span><span class="as">A few extra items, straight into the order</span></button>`:""}
-      <button type="button" class="act" data-home="book"><span class="at">Book a delivery</span><span class="as">Choose a slot · £40 minimum list</span></button>
+  return `<section class="pane home">${versionBanner()}
+    <div class="hero ${kind}">
+      <p class="hk">${next||held?"Your next delivery":"Your deliveries"}</p>
+      <h2 class="hd">${esc(head)}</h2>
+      ${sub?`<p class="hs">${esc(sub)}</p>`:""}
+      <p class="hstate"><span class="sd" aria-hidden="true"></span>${esc(state)}</p>
+      <p class="hsync">${agentLine}<button class="iconlink" type="button" data-home="sync" ${busy("sync")?"disabled":""} aria-label="Check Waitrose again">${ICON.refresh}</button></p>
+      ${(reqState("sync")||{}).s==="failed"?statusLine("sync"):""}
     </div>
-    <div class="minor"><button class="link" type="button" data-home="basket">Basket</button><span aria-hidden="true">·</span>
-      <button class="link" type="button" data-home="stock" ${plan?"":"disabled"}>Stock check</button><span aria-hidden="true">·</span>
-      <button class="link" type="button" data-home="inv">Inventory</button>${plan?`<span aria-hidden="true">·</span><button class="link" type="button" data-home="new">New list</button>`:""}</div>`;
-  if(orders.length>1) h+=`<p class="hint">Also booked: ${orders.slice(1).map(o=>esc(fmtD(o.date))+" "+esc(shortWin(o.window))).join(", ")}</p>`;
-  return h+`</section>`; }
+    <button type="button" class="go" data-home="plan"><span class="gt">${planLabel}</span><span class="gs">${esc(planSub)}</span></button>
+    <div class="pair">
+      ${amendable?`<button type="button" class="go2" data-home="quick">${ICON.plus}<span>Add items</span></button>`:""}
+      <button type="button" class="go2" data-home="book">${ICON.cal}<span>Book a slot</span></button>
+    </div>
+    <nav class="quiet" aria-label="More">
+      <button type="button" data-home="basket">Basket</button>
+      <button type="button" data-home="stock" ${plan?"":"disabled"}>Stock check</button>
+      <button type="button" data-home="inv">Inventory</button>
+      ${plan?'<button type="button" data-home="new">New list</button>':""}
+    </nav>
+    ${orders.length>1?`<p class="hint">Also booked: ${orders.slice(1).map(o=>esc(fmtD(o.date))+" "+esc(niceWin(o.window))).join(", ")}</p>`:""}
+  </section>`; }
 function homeClick(t){
   const a=t.dataset.home; if(!a) return false;
   if(a==="plan"){ view="plan"; const p=currentPlan(); if(p){ if(!run||run.id!==p.id) run=clone(p); render(); } else { render(); if(master) openSheet(true); } window.scrollTo({top:0}); return true; }
@@ -1178,7 +1203,7 @@ render();
   db.doc("inventory/levels").onSnapshot(s=>{inv=s.exists?clone(s.data()):{};render();renderInv();},()=>{});
   db.doc("requests/lookups").onSnapshot(s=>{lookups=(s.exists&&s.data().items)||[];renderInv();},()=>{});
   db.doc("requests/prices").onSnapshot(s=>{priceReq=s.exists?s.data():null;render();},()=>{});
-  db.doc("waitrose/state").onSnapshot(s=>{wstate=s.exists?s.data():null;render();},()=>{});
+  db.doc("waitrose/state").onSnapshot(s=>{wstate=s.exists?s.data():null;wsLoaded=true;render();},()=>{wsLoaded=true;});
   db.doc("catalog/options").onSnapshot(s=>{wopts=s.exists?s.data():null;if(run)render();else renderW();},()=>{});
   REQ_NAMES.forEach(n=>db.doc("requests/"+n).onSnapshot(s=>{reqs[n]=s.exists?s.data():null;render();},()=>{}));
   db.collection("runs").orderBy("delivery","desc").limit(40).onSnapshot(qs=>{

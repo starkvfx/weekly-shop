@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en-GB">
+<html lang="en-GB" data-ws="2026.10.2">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -22,15 +22,16 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>Weekly Shop Planner</h1>
+    <h1>Weekly Shop</h1>
     <div class="topright">
-      <div class="viewsw" role="tablist" aria-label="Section"><button type="button" role="tab" data-view="plan" aria-selected="true">Plan</button><button type="button" role="tab" data-view="recipes" aria-selected="false">Recipes</button></div>
+      <div class="viewsw" role="tablist" aria-label="Section"><button type="button" role="tab" data-view="home" aria-selected="true">Home</button><button type="button" role="tab" data-view="plan" aria-selected="false">Plan</button><button type="button" role="tab" data-view="recipes" aria-selected="false">Recipes</button></div>
       <button type="button" class="acctbtn" id="acctBtn" aria-label="Account"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 20c1.6-3.6 4.6-5.4 8-5.4s6.4 1.8 8 5.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     </div>
   </div>
   <div class="top runtop">
     <div class="runbar">
       <select id="runPick" aria-label="Choose a week"></select>
+      <span id="dstat"></span>
       <button class="btn" id="newRun" type="button">New week</button>
     </div>
   </div>
@@ -43,6 +44,7 @@
 <div class="sheet" id="sheet" hidden></div>
 <div class="sheet inv" id="inv" hidden></div>
 <div class="sheet rec" id="rec" hidden></div>
+<div class="sheet ws" id="wsheet" hidden></div>
 <div class="bar"><div class="in">
   <div class="sum" id="sum">Connecting…</div>
   <div class="nav">
