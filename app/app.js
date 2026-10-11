@@ -186,9 +186,17 @@ function change(mut,opts){
   if(!opts||opts.render!==false) render(); else renderBar();
   clearTimeout(saveT); saveT=setTimeout(flush,700);
 }
+/* The PC agent writes report, agent, filledAt (and status "filled") on a week. The phones never
+   change those, so always carry the newest copy forward instead of overwriting it with an older one. */
+function keepAgentFields(local,remote){
+  if(!remote) return;
+  ["report","agent","filledAt"].forEach(k=>{ if(remote[k]!==undefined) local[k]=clone(remote[k]); });
+  if(remote.status==="filled"&&local.status==="ready"&&remote.filledAt&&Date.parse(remote.filledAt)>=Date.parse(local.readyAt||0)) local.status="filled";
+}
 async function flush(){
   if(inflight||!dirty||!db||!run) return;
   inflight=true; dirty=false;
+  keepAgentFields(run,runs.find(r=>r.id===run.id));
   const body=clone(run); const id=body.id; delete body.id;
   try{ await db.doc("runs/"+id).set(body); saveMsg="Saved"; }
   catch(e){
@@ -925,7 +933,8 @@ render();
   db.collection("runs").orderBy("delivery","desc").limit(40).onSnapshot(qs=>{
     runs=qs.docs.map(d=>Object.assign({id:d.id},clone(d.data())));
     if(!run){ const today=isoD(new Date()); const upcoming=runs.filter(r=>r.delivery>=today).sort((a,b)=>a.delivery.localeCompare(b.delivery)); run=upcoming.length?clone(upcoming[0]):(runs[0]?clone(runs[0]):null); }
-    else if(!dirty&&!inflight){ const fresh=runs.find(r=>r.id===run.id); if(fresh&&fresh.updatedAt!==run.updatedAt) run=clone(fresh); }
+    else if(!dirty&&!inflight){ const fresh=runs.find(r=>r.id===run.id); if(fresh&&JSON.stringify(fresh)!==JSON.stringify(run)) run=clone(fresh); }
+    else { const fresh=runs.find(r=>r.id===run.id); if(fresh) keepAgentFields(run,fresh); }
     runsLoaded=true; render(); maybeOpen();
   },err=>{saveMsg="Lost connection to the shared list. Reload to reconnect.";renderBar();});
 })();
