@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Weekly Shop</title>
+<meta name="description" content="Household weekly shop planner">
+<meta name="theme-color" content="#F2F4EF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111713" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Shop">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Figtree:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="standalone.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>Weekly Shop Planner</h1>
+    <div class="topright">
+      <div class="viewsw" role="tablist" aria-label="Section"><button type="button" role="tab" data-view="plan" aria-selected="true">Plan</button><button type="button" role="tab" data-view="recipes" aria-selected="false">Recipes</button></div>
+      <button type="button" class="acctbtn" id="acctBtn" aria-label="Account"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 20c1.6-3.6 4.6-5.4 8-5.4s6.4 1.8 8 5.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    </div>
+  </div>
+  <div class="top runtop">
+    <div class="runbar">
+      <select id="runPick" aria-label="Choose a week"></select>
+      <button class="btn" id="newRun" type="button">New week</button>
+    </div>
+  </div>
+  <nav class="steps" id="steps" aria-label="Stages"></nav>
+  <div id="banner"></div>
+  <main id="main">
+    <section class="pane"><div class="empty">Loading your lists…</div></section>
+  </main>
+</div>
+<div class="sheet" id="sheet" hidden></div>
+<div class="sheet inv" id="inv" hidden></div>
+<div class="sheet rec" id="rec" hidden></div>
+<div class="bar"><div class="in">
+  <div class="sum" id="sum">Connecting…</div>
+  <div class="nav">
+    <button class="btn ghost" id="back" type="button">Back</button>
+    <button class="btn primary" id="next" type="button">Next</button>
+  </div>
+</div></div>
+
+<!-- sign-in -->
+<div class="auth" id="auth" hidden>
+  <div class="auth-card">
+    <div class="auth-mark"><img src="icons/icon-192.png" alt="" width="56" height="56"></div>
+    <h1>Weekly Shop</h1>
+    <p class="lead">Your household's shopping planner. Sign in to see this week's list.</p>
+    <button class="btn primary big" type="button" id="pkBtn">Sign in with Face ID</button>
+    <form id="pwForm" class="auth-form" method="post" action="#">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" autocomplete="username" inputmode="email" autocapitalize="off" placeholder="you@example.com" required>
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+      <button class="btn primary big" type="submit" id="pwGo">Sign in</button>
+    </form>
+    <p id="authMsg" class="auth-msg" role="status"></p>
+    <button class="link" type="button" id="signOutAuth" hidden>Sign out</button>
+  </div>
+</div>
+
+<!-- account -->
+<div class="sheet acct" id="acct" hidden>
+  <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="acctTitle">
+    <div class="shead"><h2 id="acctTitle">Account</h2><button class="link" type="button" id="acctClose">Done</button></div>
+    <p class="lead">Signed in as <b id="acctEmail"></b></p>
+    <p class="hint" id="acctNote"></p>
+    <button class="btn primary big" type="button" id="acctPasskey">Set up Face ID sign-in</button>
+    <form id="newPwForm" class="auth-form" method="post" action="#">
+      <input type="email" id="acctUser" name="email" autocomplete="username" hidden>
+      <label for="newPw">Change your password</label>
+      <input type="password" id="newPw" name="new-password" autocomplete="new-password" placeholder="At least 10 characters">
+      <button class="btn big" type="submit" id="newPwGo">Save new password</button>
+    </form>
+    <button class="btn big" type="button" id="acctSignOut">Sign out</button>
+  </div>
+</div>
+
+<script src="vendor/supabase-2.117.1.js"></script>
+<script src="config.js"></script>
+<script src="store.js"></script>
+<script src="auth.js"></script>
+<script src="app.js"></script>
+<script>
+if ("serviceWorker" in navigator) { window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {})); }
+</script>
+</body>
+</html>

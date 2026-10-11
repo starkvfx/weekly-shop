@@ -1,0 +1,23 @@
+/* What the Claude viewer used to provide, plus the sign-in and account screens. */
+:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);-webkit-text-size-adjust:100%}
+body{margin:0;font-size:14px}
+img{max-width:100%}
+[hidden]{display:none!important}
+input,select,textarea,button{font-size:16px} /* stops iOS zooming into fields */
+.chip,.step,.btn.sm,.pill,.lvl,.tab,.link{font-size:inherit}
+.topright{display:flex;align-items:center;gap:8px}
+.acctbtn{width:38px;height:38px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);display:grid;place-items:center;padding:0}
+.acctbtn svg{width:20px;height:20px}
+.sheet.acct{z-index:50}
+body.signed-out .wrap,body.signed-out .bar{visibility:hidden}
+.auth{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px 16px calc(24px + env(safe-area-inset-bottom,0px));overflow:auto}
+.auth-card{width:100%;max-width:400px;display:flex;flex-direction:column;gap:14px}
+.auth-mark img{border-radius:14px;display:block}
+.auth-card h1{font-size:30px}
+.auth-form{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.auth-form label{font-size:13px;font-weight:600;color:var(--muted)}
+.auth-form input{font-size:18px;padding:12px}
+#code{letter-spacing:.3em;font-family:var(--mono)}
+.auth-msg{min-height:1.4em;color:var(--muted);font-size:14px}
+.auth-msg.bad{color:var(--warn)}
+@media (display-mode: standalone){ .bar{padding-bottom:calc(14px + env(safe-area-inset-bottom,0px))} }

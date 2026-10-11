@@ -1,0 +1,7 @@
+@echo off
+cd /d "%~dp0"
+call .venv\Scripts\activate.bat
+python agent.py setup
+python agent.py login
+python agent.py check
+pause
