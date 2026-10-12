@@ -92,3 +92,4 @@ body.signed-out .wrap,body.signed-out .bar{visibility:hidden}
 .result[aria-pressed="true"]{background:var(--accent-soft)}
 .result:disabled{opacity:.5}
 .sheet-card h3{margin:0}
+.hint.held{color:var(--due)}

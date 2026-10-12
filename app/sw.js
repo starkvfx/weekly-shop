@@ -1,7 +1,7 @@
 /* Weekly Shop service worker: makes the app open instantly and installable.
    The app shell is cached; the page itself is fetched fresh when online so updates show up.
    Shopping data always comes live from the database, never from this cache. */
-const VERSION = "ws-v3";
+const VERSION = "ws-v4";
 const SHELL = ["./", "index.html", "app.css", "standalone.css", "app.js", "auth.js", "store.js", "config.js",
   "vendor/supabase-2.117.1.js", "manifest.webmanifest", "icons/icon-192.png", "icons/apple-touch-icon.png"];
 

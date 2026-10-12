@@ -156,7 +156,7 @@ let showAll=false, pickOpen=false, priceReq=null;
 let wstate=null, wopts=null, reqs={}, wsheet=null, clearArm=false;
 const REQ_NAMES=["sync","slots","book","basket","stock","quickadd","options"];
 /* Bump with index.html's data-ws when the files change together; a mismatch means part of an update wasn't uploaded. */
-const WS_VERSION="2026.10.2";
+const WS_VERSION="2026.10.3";
 function versionBanner(){ const v=document.documentElement.dataset.ws; return v===WS_VERSION?"":`<div class="banner warn"><span>Part of the last update is missing. Upload all four files in the app folder (app.js, index.html, standalone.css, sw.js) to GitHub, then reopen the app.</span></div>`; }
 let autoSynced=false, wsLoaded=false;
 function modeOf(){const m=run&&run.mode;return m==="meals"?"auto":(m&&MODES[m])?m:"manual";}
@@ -408,11 +408,11 @@ function paneList(){
     <div class="pricecheck"><span>${pc?`Waitrose prices checked ${esc(fmtD(pc.slice(0,10)))}`:"Prices from your past orders"}${reqPending?" · new check requested":""}</span><span class="pclinks"><button class="link" type="button" id="priceCheck" ${reqPending?"disabled":""}>${reqPending?"Requested":"Check latest prices"}</button><button class="link" type="button" id="stockCheck" ${busy("stock")?"disabled":""}>${busy("stock")?"Checking stock…":"Check Waitrose stock"}</button></span></div></div>
     <div class="field"><label for="extraAdd">Add an extra</label>
       <div class="addrow"><input type="text" id="extraAdd" placeholder="e.g. birthday candles, lemons x2"><button class="btn" type="button" id="extraAddBtn">Add</button></div></div>
+    ${readyHint()}
     <div class="chips">
-      <button class="btn primary" type="button" id="ready">${run.status==="ready"?(changedSinceReady?"Mark ready again":"Ready ✓"):"Mark ready"}</button>
+      ${deliveryFor(run).k==="none"?'<button class="btn primary" type="button" id="goBook2">Book a slot for this list</button>':deliveryFor(run).k==="held"?"":`<button class="btn primary" type="button" id="ready">${run.status==="ready"?(changedSinceReady?"Mark ready again":"Ready ✓"):"Mark ready"}</button>`}
       ${run.status==="ready"?'<button class="btn" type="button" id="unready">Back to planning</button>':""}
       <button class="btn" type="button" id="copy">Copy list</button>
-      ${deliveryFor(run).k==="none"?'<button class="btn" type="button" id="goBook2">Book a delivery</button>':""}
       <button class="btn ghost danger" type="button" id="clearList">${clearArm?"Tap again to clear everything":"Clear list"}</button>
     </div>
   </section>`;
@@ -496,6 +496,10 @@ function render(){
 
 /* ---------- Waitrose: deliveries, booking, basket, stock (the PC agent does the Waitrose side) ---------- */
 function ago(iso){ if(!iso) return "never"; const m=Math.round((Date.now()-Date.parse(iso))/60000); if(m<1) return "just now"; if(m<60) return `${m} min ago`; const h=Math.round(m/60); if(h<24) return `${h} hour${h>1?"s":""} ago`; return fmtD(iso.slice(0,10)); }
+/* Is the PC agent running? It reports in every minute; a long Waitrose job can take a few. */
+function agentState(){ const a=wstate&&wstate.agent; if(!a||!a.seenAt) return {k:"never"};
+  const age=(Date.now()-Date.parse(a.seenAt))/60000; if(age<3||(a.busy==="working"&&age<30)) return {k:"on",a}; return {k:"off",a,age}; }
+const AGENT_OFF="The PC agent isn't running. On the PC, double-click run_agent.bat (or log in to the PC, if autostart is set up).";
 function deliveryFor(r){ if(!r||!wstate) return {k:"unknown"}; const o=(wstate.orders||[]).find(o=>o.date===r.delivery); if(o) return {k:"booked",o};
   const h=wstate.held; if(h&&h.date===r.delivery) return {k:"held",h}; return {k:"none"}; }
 function shortWin(w){ return String(w||"").replace(/:00/g,"").replace(/\s*-\s*/,"–"); }
@@ -512,8 +516,8 @@ function reqState(name){ const r=reqs[name]; if(!r||!r.requestedAt) return null;
   if(r.doneAt&&Date.parse(r.doneAt)>=t) return {s:"done",m:r.message||"Done."};
   if(r.failedAt&&Date.parse(r.failedAt)>=t) return {s:"failed",m:r.message||"That didn't work."};
   if(r.status==="working") return {s:"working",m:r.message||"Working…"};
-  const waited=(Date.now()-t)/60000;
-  return {s:"queued",m:waited>3?"Still waiting for the PC agent. Is the PC on, with the agent running?":"Sent. The PC agent picks this up within a minute while the PC is on."}; }
+  if(agentState().k!=="on") return {s:"queued",m:"Waiting. "+AGENT_OFF+(name==="book"||name==="quickadd"||name==="basket"?" This request expires after 30 minutes.":"")};
+  return {s:"queued",m:"Sent. The PC agent picks this up within a minute."}; }
 function busy(name){ const r=reqState(name); return !!r&&(r.s==="queued"||r.s==="working"); }
 function statusLine(name){ const r=reqState(name); if(!r) return ""; return `<p class="status s-${r.s}" role="status">${r.s==="working"||r.s==="queued"?'<span class="dot" aria-hidden="true"></span>':""}${esc(r.m).replace(/\n/g,"<br>")}</p>`; }
 function stockFor(){ const st=wstate&&wstate.stock; return st&&run&&st.runId===run.id?st.items||null:null; }
@@ -529,6 +533,11 @@ function tierBar(items){
     n?`${n} product${n>1?"s":""} swapped · ${saving>=0?"saves":"adds"} about ${money(Math.abs(saving))}`:"No swaps found at this level.";
   return `<div class="tierbar"><div class="seg" role="group" aria-label="Product level">${TIERS.map(([k,l])=>`<button type="button" data-tier="${k}" aria-pressed="${cur===k}">${l}</button>`).join("")}</div>
     <p class="hint">${esc(note)}${cur&&!haveOpts?` <button class="link" type="button" id="fetchOptions" ${busy("options")?"disabled":""}>${busy("options")?"Fetching…":"Fetch them now"}</button>`:""}</p>${busy("options")?statusLine("options"):""}</div>`; }
+function readyHint(){ const d=deliveryFor(run);
+  if(d.k==="none") return `<p class="hint">There's no Waitrose delivery on ${esc(heroDate(run.delivery))}. Book a slot and the PC agent puts this list in your trolley.</p>`;
+  if(d.k==="held") return `<p class="hint">This list is in your Waitrose trolley with a held slot. Check out in the Waitrose app to place the order.</p>`;
+  if(d.k==="booked") return `<p class="hint">Mark ready and the PC agent adds this list to your ${esc(heroDate(run.delivery))} order${(wstate.agent||{}).mode==="dry-run"?" (practice mode: it only reports what it would add)":""}.</p>`;
+  return ""; }
 function clearList(){ change(r=>{ r.meals=[]; r.extraMeals=[]; r.staples={}; (master.staples||[]).forEach(i=>{r.staples[i.id]=0;}); r.topups={}; r.drinks={}; r.household={};
   r.cupboard=[]; r.extras=[]; r.edits={}; r.auto={}; r.swaps={}; r.status="planning";
   r.breakfast=Object.assign(defaultBreakfast(),{zoe:[],owen:[],cerealQty:0}); }); }
@@ -545,14 +554,17 @@ function paneHome(){
   const orders=((wstate&&wstate.orders)||[]).filter(o=>o.date>=today).sort((a,b)=>a.date.localeCompare(b.date));
   const next=orders[0], held=wstate&&wstate.held&&wstate.held.date>=today?wstate.held:null, plan=currentPlan();
   let kind, head, sub, state;
-  if(next){ kind="ok"; head=heroDate(next.date); sub=[niceWin(next.window),amendLine(next)].filter(Boolean).join(", ");
+  const heldFirst=held&&(!next||held.date<=next.date);
+  if(next&&!heldFirst){ kind="ok"; head=heroDate(next.date); sub=[niceWin(next.window),amendLine(next)].filter(Boolean).join(", ");
     state=`Booked with Waitrose${next.total!=null?`, ${money(next.total)} for ${(next.items||[]).reduce((a,i)=>a+(+i.qty||1),0)} items`:""}`; }
-  else if(held){ kind="held"; head=heroDate(held.date); sub=niceWin(held.time); state="Slot held. Check out in the Waitrose app to keep it."; }
+  else if(heldFirst){ kind="held"; head=heroDate(held.date); sub=niceWin(held.time); state="Slot held. Check out in the Waitrose app to keep it."; }
   else { kind="none"; head="No delivery"; sub=""; state="Plan a list, then book a slot."; }
   const synced=wstate&&wstate.syncedAt;
-  const agentLine=busy("sync")?'<span class="dot" aria-hidden="true"></span>Checking Waitrose…':
-    wstate&&wstate.signedIn===false?'<span class="warntxt">The PC isn\'t signed in to Waitrose. Double-click login.bat on the PC.</span>':
-    synced?`Checked ${esc(ago(synced))}`:"Waiting for the PC agent";
+  const ag=agentState();
+  const agentLine=ag.k!=="on"?`<span class="warntxt">${ag.k==="never"?"The PC agent hasn't started yet. On the PC, double-click run_agent.bat.":`The PC agent isn't running (last seen ${esc(ago(ag.a.seenAt))}). On the PC, double-click run_agent.bat.`}</span>`:
+    busy("sync")?'<span class="dot" aria-hidden="true"></span>Checking Waitrose…':
+    wstate&&wstate.signedIn===false?'<span class="warntxt">The PC isn\'t signed in to Waitrose. Close the agent window, double-click login.bat, then run_agent.bat.</span>':
+    synced?`PC agent on. Waitrose checked ${esc(ago(synced))}`:"PC agent on. Checking Waitrose…";
   const planLabel=plan?"Carry on planning":"Plan a shop";
   const planSub=plan?`${plan.status==="filled"?"Sent to Waitrose":plan.status==="ready"?"Ready to send":"Draft"} for ${heroDate(plan.delivery)}`:"Start this week's list";
   const amendable=next&&next.amendable!==false;
@@ -576,7 +588,8 @@ function paneHome(){
       <button type="button" data-home="inv">Inventory</button>
       ${plan?'<button type="button" data-home="new">New list</button>':""}
     </nav>
-    ${orders.length>1?`<p class="hint">Also booked: ${orders.slice(1).map(o=>esc(fmtD(o.date))+" "+esc(niceWin(o.window))).join(", ")}</p>`:""}
+    ${held&&!heldFirst?`<p class="hint warntxt held">Also: a slot is held for ${esc(heroDate(held.date))}, ${esc(niceWin(held.time))}. Check out in the Waitrose app to keep it.</p>`:""}
+    ${(()=>{ const rest=orders.filter(o=>!(next&&!heldFirst&&o===next)); return rest.length?`<p class="hint">${heldFirst?"Booked":"Also booked"}: ${rest.map(o=>esc(heroDate(o.date))+" "+esc(niceWin(o.window))).join(", ")}</p>`:""; })()}
   </section>`; }
 function homeClick(t){
   const a=t.dataset.home; if(!a) return false;
